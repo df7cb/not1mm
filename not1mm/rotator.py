@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QGraphicsPathItem,
     QGraphicsPixmapItem,
     QGraphicsScene,
+    QMenu,
 )
 
 from not1mm import fsutils
@@ -60,6 +61,8 @@ class RotatorWindow(QDockWidget):
         self.move_button.customContextMenuRequested.connect(
             self.rotate_long_path
         )  # right-click
+        self.centralwidget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.centralwidget.customContextMenuRequested.connect(self.show_contextmenu) # right-click
         self.stop_button.clicked.connect(self.stop)
         self.park_button.clicked.connect(lambda x: self.rotator.send_command("K"))
         self.redrawMap()
@@ -69,6 +72,11 @@ class RotatorWindow(QDockWidget):
         self.watch_timer: QTimer = QTimer()
         self.watch_timer.timeout.connect(self.check_rotator)
         self.watch_timer.start(1000)
+
+        self.context_menu = QMenu(self)
+        self.show_nswe_buttons_action = self.context_menu.addAction("Show NSWE buttons")
+        self.show_nswe_buttons_action.setCheckable(True)
+        self.show_nswe_buttons_action.triggered.connect(self.show_nswe_buttons)
 
     def set_host_port(self, host: str, port: int) -> None:
         """Sets the networking host and port."""
@@ -398,6 +406,25 @@ class RotatorWindow(QDockWidget):
                     angle += 360
 
                 self.rotator.set_position(angle)
+
+    def show_contextmenu(self, event) -> None:
+        self.context_menu.exec(event)
+
+    def show_nswe_buttons(self) -> None:
+        show = self.show_nswe_buttons_action.isChecked()
+        if show:
+            self.north_button.show()
+            self.south_button.show()
+            self.west_button.show()
+            self.east_button.show()
+        else:
+            self.north_button.hide()
+            self.south_button.hide()
+            self.west_button.hide()
+            self.east_button.hide()
+            self.east_spacer.hide()
+            self.west_spacer.hide()
+            #self.rotatorvlayout.setStretch(2, 0)
 
     def check_rotator(self) -> None:
         """Check the rotator"""
