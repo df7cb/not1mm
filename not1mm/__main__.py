@@ -106,6 +106,7 @@ from not1mm.radio import Radio
 from not1mm.ratewindow import RateWindow
 from not1mm.rotator import RotatorWindow
 from not1mm.rtc_service import RTCService
+from not1mm.so2r import SO2RWindow
 from not1mm.statistics import StatsWindow
 from not1mm.vfo import VfoWindow
 from not1mm.voice_keying import Voice, has_output_device
@@ -171,6 +172,7 @@ class MainWindow(QtWidgets.QMainWindow):
         "checkwindow": False,
         "vfowindow": False,
         "ratewindow": False,
+        "so2rwindow": False,
         "statisticswindow": False,
         "darkmode": True,
     }
@@ -224,6 +226,7 @@ class MainWindow(QtWidgets.QMainWindow):
     bandmap_window = None
     vfo_window = None
     rate_window = None
+    so2r_window = None
     statistics_window = None
     dxcc_window = None
     zone_window = None
@@ -383,6 +386,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.actionBandmap.triggered.connect(self.launch_bandmap_window)
         self.actionCheck_Window.triggered.connect(self.launch_check_window)
         self.actionRate_Window.triggered.connect(self.launch_rate_window)
+        self.actionSO2R_Window.triggered.connect(self.launch_so2r_window)
         self.actionStatistics.triggered.connect(self.launch_stats_window)
         self.actionGroup_Chat.triggered.connect(self.launch_chat_window)
         self.actionVFO.triggered.connect(self.launch_vfo)
@@ -828,6 +832,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.rate_window.message.connect(self.dockwidget_message)
         self.rate_window.ratewindow_closed.connect(self.launch_rate_window)
 
+        self.show_splash_msg("Setting up SO2R Window.")
+        self.so2r_window = SO2RWindow(self.actionSO2R_Window)
+        self.so2r_window.setObjectName("so2r-window")
+        if os.environ.get("WAYLAND_DISPLAY") and old_Qt is True:
+            self.so2r_window.setFeatures(dockfeatures)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.so2r_window)
+        self.so2r_window.hide()
+        self.so2r_window.message.connect(self.dockwidget_message)
+        self.so2r_window.so2rwindow_closed.connect(self.launch_so2r_window)
+
         self.show_splash_msg("Setting up StatisticsWindow.")
         self.statistics_window = StatsWindow(self.actionStatistics)
         self.statistics_window.setObjectName("statistics-window")
@@ -956,6 +970,14 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.rate_window.hide()
             self.rate_window.setActive(False)
+
+        self.actionSO2R_Window.setChecked(self.pref.get("so2rwindow", False))
+        if self.actionSO2R_Window.isChecked():
+            self.so2r_window.show()
+            self.so2r_window.setActive(True)
+        else:
+            self.so2r_window.hide()
+            self.so2r_window.setActive(False)
 
         self.actionStatistics.setChecked(self.pref.get("statisticswindow", False))
         if self.actionStatistics.isChecked():
@@ -2525,6 +2547,17 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.rate_window.hide()
             self.rate_window.setActive(False)
+
+    def launch_so2r_window(self) -> None:
+        """Launch or close the SO2R window"""
+        self.pref["so2rwindow"] = self.actionSO2R_Window.isChecked()
+        self.write_preference()
+        if self.actionSO2R_Window.isChecked():
+            self.so2r_window.show()
+            self.so2r_window.setActive(True)
+        else:
+            self.so2r_window.hide()
+            self.so2r_window.setActive(False)
 
     def launch_stats_window(self) -> None:
         """Launch or close the stats window"""

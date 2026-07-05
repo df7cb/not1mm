@@ -1585,6 +1585,7 @@
     <addaction name="actionCheck_Window"/>
     <addaction name="actionLog_Window"/>
     <addaction name="actionRate_Window"/>
+    <addaction name="actionSO2R_Window"/>
     <addaction name="actionStatistics"/>
     <addaction name="actionVFO"/>
     <addaction name="actionRotator"/>
@@ -2287,6 +2288,14 @@
    </property>
    <property name="shortcut">
     <string>Alt+Z</string>
+   </property>
+  </action>
+  <action name="actionSO2R_Window">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>SO2R</string>
    </property>
   </action>
  </widget>
