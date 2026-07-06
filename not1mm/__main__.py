@@ -3212,7 +3212,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.dupe_indicator.hide()
         self.callsign.setStyleSheet("")
-        self.contact = self.database.empty_contact.copy()
+        if hasattr(self, "database"):  # missing during early initialization
+            self.contact = self.database.empty_contact.copy()
         self.heading_distance.setText("")
         self.history_info.setText("")
         self.dx_entity.setText("")
