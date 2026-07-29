@@ -166,15 +166,16 @@ class ClusterWindow(QDockWidget):
                 _time = parts[-1]
                 comment = " ".join(parts[5:-1])
                 spot = {}
-                spot["cmd"] = "DX"
                 spot["ts"] = datetime.now(UTC).isoformat(" ")[:19]
-                spot["dx"] = dx
+                spot["callsign"] = dx
                 spot["spotter"] = spotter
                 spot["comment"] = comment
                 logger.debug(f"{spot}")
                 try:
                     spot["freq"] = float(freq)
-                    self.message.emit(spot)
+                    self.parent.database.addspot(spot)
+                    # we could maybe emit a NEWSPOT signal here, but if the
+                    # cluster is fairly busy, that might not end well
                 except ValueError:
                     logger.debug(f"couldn't parse freq from datablock {data}")
 
@@ -203,9 +204,9 @@ class ClusterWindow(QDockWidget):
         """Process messages from the main screen."""
 
         if packet.get("cmd", "") == "SPOTDX":
-            if "dx" in packet and "freq" in packet:
-                dx = packet.get("dx")
-                freq = packet.get("freq")
+            dx = packet.get("dx", "")
+            freq = packet.get("freq", 0.0)
+            if dx and freq:
                 spotdx = f"dx {dx} {freq}"
                 self.cluster_send(spotdx)
 

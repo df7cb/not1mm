@@ -9,8 +9,12 @@ GPL V3
 # get Saturday plus 48 hours: select datetime('now', 'WEEKDAY 6','48 HOURS');
 # DROP TABLE IF EXISTS t1;
 
+from datetime import UTC, datetime
 import logging
+import platform
 import sqlite3
+
+from not1mm.lib.ham_utility import band2banddef, khz2banddef
 
 if __name__ == "__main__":
     print("I'm not the program you are looking for.")
@@ -78,6 +82,7 @@ class DataBase:
         self.create_contest_instance_table()
         self.create_station_table()
         self.create_callhistory_table()
+        self.create_spots_table()
 
     @staticmethod
     def row_factory(cursor, row):
@@ -130,7 +135,7 @@ class DataBase:
             return cursor.fetchall()
         except sqlite3.OperationalError as exception:
             logger.error("%s", exception)
-            return ()
+            return []
 
     def exec_sql_commit(
         self, query: str, params=(), commit=True, error_logger=logger.error
@@ -357,6 +362,32 @@ class DataBase:
             "PRIMARY KEY([Call]));"
         )
         self.exec_sql_commit(sql_command)
+
+    def create_spots_table(self) -> None:
+        """Creates the spots table"""
+        sql_command = (
+            "create table Spots ("
+            "callsign VARCHAR(15) NOT NULL, "
+            "ts DATETIME NOT NULL, "
+            "freq DOUBLE NOT NULL, "  # in kHz
+            "band FLOAT NOT NULL, "  # in MHz
+            "mode VARCHAR(6), "
+            "spotter VARCHAR(15) NOT NULL, "
+            "comment VARCHAR(45), "
+            "multiplier1 VARCHAR(15), "
+            "multiplier2 VARCHAR(15), "
+            "multiplier3 VARCHAR(15), "
+            "ismultiplier1 BOOLEAN, "
+            "ismultiplier2 BOOLEAN, "
+            "ismultiplier3 BOOLEAN, "
+            "isnewcall BOOLEAN, "
+            "marked BOOLEAN DEFAULT false);"
+        )
+        self.exec_sql_commit(sql_command)
+
+        self.exec_sql_commit("CREATE INDEX IF NOT EXISTS spot_call_index ON spots (callsign);")
+        self.exec_sql_commit("CREATE INDEX IF NOT EXISTS spot_freq_index ON spots (freq);")
+        self.exec_sql_commit("CREATE INDEX IF NOT EXISTS spot_ts_index ON spots (ts);")
 
     def add_station(self, station: dict) -> None:
         """Add station information"""
@@ -916,3 +947,137 @@ class DataBase:
             "select count(DISTINCT substr(call, -1) || ':' || band) as count from dxlog where ContestNR = ?;",
             (self.current_contest,),
         )
+
+    # spot functions
+
+    def get_spots_like_calls(self, call: str) -> list:
+        """
+        Returns spots where the spotted callsigns contain the supplied string.
+        """
+        return self.exec_sql_mult(
+                "select distinct callsign from spots where callsign like ? ORDER by callsign ASC;"
+                , (f"%{call}%",)
+            )
+
+    def addspot(self, spot: dict, clear_freq=False) -> None:
+        """
+        Add spot to database, replacing any previous spots with the same call
+        on the same band.
+
+        Parameters
+        ----------
+        spot: Dict
+        A dict of the form: {'ts': datetime, 'callsign': str, 'freq': float,
+        'band': str,'mode': str,'spotter': str, 'comment': str}
+
+        clear_freq: bool
+        If True, delete any previous spots around this frequency.
+
+        Returns
+        -------
+        Nothing.
+        """
+
+        if "band" in spot:
+            band = band2banddef(spot.get("band", ""), unknown_band=True)
+        else:
+            band = khz2banddef(spot.get("freq"), unknown_band=True)
+
+        delete_call_q = (
+            "delete from spots where callsign = ? and freq between ? and ?"
+        )
+        if "MARKED" not in spot.get("comment", ""):
+            # new spot is not MARKED, don't overwrite any MARKED spot
+            delete_call_q += " and comment not like '%MARKED%'"
+        self.exec_sql_commit(
+            delete_call_q, (spot.get("callsign"), band.start, band.end), commit=False
+        )
+
+        if clear_freq:
+            CLEAR_FREQ = 0.1  # 100 Hz
+            clear_freq_q = "delete from spots where freq between ? and ?;"
+            self.exec_sql_commit(
+                clear_freq_q,
+                (spot.get("freq") - CLEAR_FREQ, spot.get("freq") + CLEAR_FREQ), commit=False
+            )
+
+        self.exec_sql_commit(
+            "INSERT INTO spots(callsign, ts, freq, mode, spotter, comment) VALUES(?, ?, ?, ?, ?, ?)",
+            (
+                spot["callsign"],
+                spot.get(
+                    "ts",
+                    datetime.now(UTC).replace(second=0, microsecond=0, tzinfo=None),
+                ),
+                spot["freq"],
+                spot.get("mode", None),
+                spot.get("spotter", platform.node()),
+                spot.get("comment", ""),
+            ), commit=False
+        )
+        self.commit_it()
+
+    def getspots(self) -> list:
+        """
+        Return a list of spots, sorted by the ascending frequency of the spot.
+        """
+        return self.exec_sql_mult("select * from spots order by freq ASC;")
+
+    def getspotsinband(self, start: float, end: float) -> list:
+        """
+        Returns spots in a list of dicts where the spotted frequency
+        is in the range defined, in ascending order.
+        """
+        return self.exec_sql_mult(
+            "select * from spots where freq >= ? and freq <= ? order by freq ASC;",
+            (start, end),
+        )
+
+    def get_next_spot(self, current: float, limit: float) -> dict:
+        """
+        Return a list of dict where freq range is defined by current and limit.
+        The list is sorted by the ascending frequency of the spot.
+        """
+        return self.exec_sql(
+            "select * from spots where freq > ? and freq <= ? order by freq ASC;",
+            (current, limit),
+        )
+
+    def get_matching_spot(self, dx: str, start: float, end: float) -> dict:
+        """
+        Return the first spot matching supplied dx partial callsign.
+        """
+        return self.exec_sql(
+            "select * from spots where freq >= ? and freq <= ? and callsign like ?;",
+            (start, end, f"%{dx}%"),
+        )
+
+    def get_prev_spot(self, current: float, limit: float) -> dict:
+        """
+        Return a list of dict where freq range is defined in descending order.
+        """
+        return self.exec_sql(
+            "select * from spots where freq < ? and freq >= ? order by freq DESC;",
+            (current, limit),
+        )
+
+    def delete_spot(self, call: str, freq: float) -> None:
+        """
+        Delete a spot identified by call and frequency.
+        """
+        self.exec_sql_commit(
+            "delete from spots where callsign = ? and freq = ?", (call, freq)
+        )
+
+    def delete_spots(self, minutes: int) -> None:
+        """
+        Delete spots older than the specified number of minutes.
+        """
+        self.exec_sql_commit(
+            "delete from spots where ts < datetime('now', ?);",
+            (f"-{minutes} minutes",),
+        )
+
+    def delete_marks(self) -> None:
+        """Delete marked spots."""
+        self.exec_sql_commit("delete from spots where ts > datetime('now');")

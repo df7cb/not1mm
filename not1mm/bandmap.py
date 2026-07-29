@@ -9,7 +9,6 @@ Purpose: Onscreen widget to show realtime spots from an AR cluster.
 
 import logging
 import platform
-import sqlite3
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -29,291 +28,6 @@ logger = logging.getLogger(__name__)
 
 PIXELSPERSTEP = 10
 UPDATE_INTERVAL = 2000
-CLEAR_FREQ = 0.1  # 100 Hz
-
-
-class Database:
-    """
-    An in memory Database class to hold spots.
-    """
-
-    def __init__(self) -> None:
-        self.db = sqlite3.connect(":memory:")
-        self.db.row_factory = self.row_factory
-        self.cursor = self.db.cursor()
-        sql_command = (
-            "create table spots ("
-            "callsign VARCHAR(15) NOT NULL, "
-            "ts DATETIME NOT NULL, "
-            "freq DOUBLE NOT NULL, "  # in kHz
-            "mode VARCHAR(6), "
-            "spotter VARCHAR(15) NOT NULL, "
-            "comment VARCHAR(45));"
-        )
-        self.cursor.execute(sql_command)
-
-        self.cursor.execute("CREATE INDEX spot_call_index ON spots (callsign);")
-        self.cursor.execute("CREATE INDEX spot_freq_index ON spots (freq);")
-        self.cursor.execute("CREATE INDEX spot_ts_index ON spots (ts);")
-
-        self.db.commit()
-
-    @staticmethod
-    def row_factory(cursor, row):
-        """
-        cursor.description:
-        (name, type_code, display_size,
-        internal_size, precision, scale, null_ok)
-        row: (value, value, ...)
-        """
-        return {
-            col[0]: row[idx]
-            for idx, col in enumerate(
-                cursor.description,
-            )
-        }
-
-    def get_like_calls(self, call: str) -> dict:
-        """
-        Returns spots where the spotted callsigns contain the supplied string.
-
-        Parameters
-        ----------
-        call : str
-        The callsign to search for.
-
-        Returns
-        -------
-        a dict like:
-
-        {'K5TUX': [14.0, 21.0], 'N2CQR': [14.0], 'NE4RD': [14.0]}
-        """
-        try:
-            self.cursor.execute(
-                f"select distinct callsign from spots where callsign like '%{call}%' ORDER by callsign ASC;"
-            )
-            result = self.cursor.fetchall()
-            return result
-        except sqlite3.OperationalError as exception:
-            logger.debug("%s", exception)
-            return {}
-
-    def addspot(self, spot: dict, clear_freq=False) -> None:
-        """
-        Add spot to database, replacing any previous spots with the same call
-        on the same band.
-
-        Parameters
-        ----------
-        spot: Dict
-        A dict of the form: {'ts': datetime, 'callsign': str, 'freq': float,
-        'band': str,'mode': str,'spotter': str, 'comment': str}
-
-        clear_freq: bool
-        If True, delete any previous spots around this frequency.
-
-        Returns
-        -------
-        Nothing.
-        """
-
-        if "band" in spot:
-            band = band2banddef(spot.get("band", ""), unknown_band=True)
-        else:
-            band = khz2banddef(spot.get("freq"), unknown_band=True)
-
-        try:
-            delete_call_q = (
-                "delete from spots where callsign = ? and freq between ? and ?"
-            )
-            if "MARKED" not in spot.get("comment", ""):
-                # new spot is not MARKED, don't overwrite any MARKED spot
-                delete_call_q += " and comment not like '%MARKED%'"
-            self.cursor.execute(
-                delete_call_q, (spot.get("callsign"), band.start, band.end)
-            )
-
-            if clear_freq:
-                clear_freq_q = "delete from spots where freq between ? and ?"
-                if "MARKED" not in spot.get("comment", ""):
-                    clear_freq_q += " and comment not like '%MARKED%'"
-                clear_freq_q += ";"
-                self.cursor.execute(
-                    clear_freq_q,
-                    (spot.get("freq") - CLEAR_FREQ, spot.get("freq") + CLEAR_FREQ),
-                )
-
-            self.cursor.execute(
-                "INSERT INTO spots(callsign, ts, freq, mode, spotter, comment) VALUES(?, ?, ?, ?, ?, ?)",
-                (
-                    spot["callsign"],
-                    spot.get(
-                        "ts",
-                        datetime.now(UTC).replace(second=0, microsecond=0, tzinfo=None),
-                    ),
-                    spot["freq"],
-                    spot.get("mode", None),
-                    spot.get("spotter", platform.node()),
-                    spot.get("comment", ""),
-                ),
-            )
-            self.db.commit()
-        except sqlite3.IntegrityError:
-            ...
-
-    def markspot(self, spot: dict, clear_freq=False) -> None:
-        """
-        Marks a spot that was rightclicked.
-        Changes the time to the future so the marked spot does not get
-        removed with the other normal spots.
-        """
-        the_UTC_time = datetime.now(UTC).isoformat(" ")[:19].split()[1]
-        ts = "2099-01-01 " + the_UTC_time
-        try:
-            self.cursor.execute(
-                f"update spots set ts='{ts}', comment='{spot.get('comment', '')}' where freq='{spot.get('freq', '')}' and callsign='{spot.get('callsign', '')}';"
-            )
-            self.db.commit()
-        except sqlite3.IntegrityError:
-            ...
-
-    def getspots(self) -> list:
-        """
-        Return a list of spots, sorted by the ascending frequency of the spot.
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        a list of dicts.
-        """
-        try:
-            self.cursor.execute("select * from spots order by freq ASC;")
-            return self.cursor.fetchall()
-        except sqlite3.OperationalError:
-            return ()
-
-    def getspotsinband(self, start: float, end: float) -> list:
-        """
-        Returns spots in a list of dicts where the spotted frequency
-        is in the range defined, in ascending order.
-
-        Parameters
-        ----------
-        start : float
-        The start frequency.
-        end : float
-        The end frequency.
-
-        Returns
-        -------
-        A list of dicts.
-        """
-        self.cursor.execute(
-            "select * from spots where freq >= ? and freq <= ? order by freq ASC;",
-            (start, end),
-        )
-        return self.cursor.fetchall()
-
-    def get_next_spot(self, current: float, limit: float) -> dict:
-        """
-        Return a list of dict where freq range is defined by current and limit.
-        The list is sorted by the ascending frequency of the spot.
-
-        Parameters
-        ----------
-        current : float
-        The current frequency.
-        limit : float
-        The limit frequency.
-
-        Returns
-        -------
-        A dict of the spot.
-        """
-        self.cursor.execute(
-            "select * from spots where freq > ? and freq <= ? order by freq ASC;",
-            (current, limit),
-        )
-        return self.cursor.fetchone()
-
-    def get_matching_spot(self, dx: str, start: float, end: float) -> dict:
-        """
-        Return the first spot matching supplied dx partial callsign.
-
-        Parameters
-        ----------
-        dx : str
-        The dx partial callsign.
-        start : float
-        The start frequency.
-        end : float
-        The end frequency.
-
-        Returns
-        -------
-        A dict of the spot.
-        """
-
-        self.cursor.execute(
-            "select * from spots where freq >= ? and freq <= ? and callsign like ?;",
-            (start, end, f"%{dx}%"),
-        )
-        return self.cursor.fetchone()
-
-    def get_prev_spot(self, current: float, limit: float) -> dict:
-        """
-        Return a list of dict where freq range is defined in descending order.
-
-        Parameters
-        ----------
-        current : float
-        The current frequency.
-        limit : float
-        The limit frequency.
-
-        Returns
-        -------
-        A list of dicts.
-        """
-        self.cursor.execute(
-            "select * from spots where freq < ? and freq >= ? order by freq DESC;",
-            (current, limit),
-        )
-        return self.cursor.fetchone()
-
-    def delete_spot(self, call: str, freq: float) -> None:
-        """
-        Delete a spot identified by call and frequency.
-        """
-        self.cursor.execute(
-            "delete from spots where callsign = ? and freq = ?", (call, freq)
-        )
-        self.db.commit()
-
-    def delete_spots(self, minutes: int) -> None:
-        """
-        Delete spots older than the specified number of minutes.
-
-        Parameters
-        ----------
-        minutes : int
-        The number of minutes to delete.
-
-        Returns
-        -------
-        None
-        """
-        self.cursor.execute(
-            "delete from spots where ts < datetime('now', ?) and comment not like '%MARKED%';",
-            (f"-{minutes} minutes",),
-        )
-
-    def delete_marks(self) -> None:
-        """Delete marked spots."""
-        self.cursor.execute("delete from spots where ts > datetime('now');")
 
 
 class BandMapScene(QtWidgets.QGraphicsScene):
@@ -335,7 +49,7 @@ class BandMapScene(QtWidgets.QGraphicsScene):
             menu = QtWidgets.QMenu()
             menu.addAction(
                 "Confirm",
-                lambda: self.parent.spots.addspot(
+                lambda: self.parent.parent.database.addspot(
                     {
                         "callsign": callsign,
                         "freq": freq,
@@ -347,7 +61,7 @@ class BandMapScene(QtWidgets.QGraphicsScene):
             if "MARKED" in comment:
                 menu.addAction(
                     "Unmark",
-                    lambda: self.parent.spots.addspot(
+                    lambda: self.parent.parent.database.addspot(
                         {
                             "callsign": callsign,
                             "freq": freq,
@@ -359,7 +73,7 @@ class BandMapScene(QtWidgets.QGraphicsScene):
             else:
                 menu.addAction(
                     "Mark",
-                    lambda: self.parent.spots.markspot(
+                    lambda: self.parent.parent.database.addspot(
                         {
                             "callsign": callsign,
                             "freq": freq,
@@ -369,7 +83,7 @@ class BandMapScene(QtWidgets.QGraphicsScene):
                     ),
                 )
             menu.addAction(
-                "Delete", lambda: self.parent.spots.delete_spot(callsign, freq)
+                "Delete", lambda: self.parent.parent.database.delete_spot(callsign, freq)
             )
             menu.exec(event.screenPos())
         else:
@@ -397,12 +111,9 @@ class BandMapWindow(QDockWidget):
     something = None
     lineitemlist = []  # noqa: RUF012
     textItemList = []  # noqa: RUF012
-    connected = False
-    test_for_data = None
     bandwidth = 0
     bandwidth_mark = []  # noqa: RUF012
     worked_list = {}  # noqa: RUF012
-    multicast_interface = None
     text_color = QColor(45, 45, 45)
     worked_color = QColor(128, 128, 128)
 
@@ -417,9 +128,10 @@ class BandMapWindow(QDockWidget):
     message = pyqtSignal(dict)
     bandmapwindow_closed = pyqtSignal()
 
-    def __init__(self, action):
+    def __init__(self, action, parent):
         super().__init__()
         self.action = action
+        self.parent = parent
         self.active = False
         self._udpwatch = None
 
@@ -440,7 +152,6 @@ class BandMapWindow(QDockWidget):
         self.clearmarkedButton.setIcon(icon)
         self.zoominButton.clicked.connect(self.zoom_in)
         self.zoomoutButton.clicked.connect(self.zoom_out)
-        self.spots = Database()
         self.bandmap_scene = BandMapScene(self)
         self.bandmap_scene.setFont(self.thefont)
         self.bandmap_scene.clear()
@@ -481,7 +192,7 @@ class BandMapWindow(QDockWidget):
             self.drawTXRXMarks(step)
             return
         if packet.get("cmd", "") == "NEXTSPOT" and self.rx_freq:
-            spot = self.spots.get_next_spot(self.rx_freq + 0.001, self.currentBand.end)
+            spot = self.parent.database.get_next_spot(self.rx_freq + 0.001, self.currentBand.end)
             if spot:
                 cmd = {}
                 cmd["cmd"] = "TUNE"
@@ -490,7 +201,7 @@ class BandMapWindow(QDockWidget):
                 self.message.emit(cmd)
             return
         if packet.get("cmd", "") == "PREVSPOT" and self.rx_freq:
-            spot = self.spots.get_prev_spot(
+            spot = self.parent.database.get_prev_spot(
                 self.rx_freq - 0.001, self.currentBand.start
             )
             if spot:
@@ -501,12 +212,6 @@ class BandMapWindow(QDockWidget):
                 self.message.emit(cmd)
             return
 
-        if packet.get("cmd", "") == "DX":
-            spot = packet
-            spot["callsign"] = packet.get("dx", "")  # rename field
-            self.spots.addspot(spot, clear_freq=True)
-            self.update_stations()
-            return
         if packet.get("cmd", "") == "MARKDX":
             dx = packet.get("dx", "")
             freq = packet.get("freq", 0.0)
@@ -516,18 +221,17 @@ class BandMapWindow(QDockWidget):
                 "ts": "2099-01-01 " + the_UTC_time,
                 "callsign": dx,
                 "freq": freq,
-                "band": self.currentBand.name,
                 "mode": "DX",
                 "spotter": platform.node(),
                 "comment": comment,
             }
-            self.spots.addspot(spot, clear_freq=True)
+            self.parent.database.addspot(spot, clear_freq=True)
             self.update_stations()
             return
 
         if packet.get("cmd", "") == "FINDDX":
             dx = packet.get("dx", "")
-            spot = self.spots.get_matching_spot(
+            spot = self.parent.database.get_matching_spot(
                 dx, self.currentBand.start, self.currentBand.end
             )
             if spot:
@@ -545,7 +249,7 @@ class BandMapWindow(QDockWidget):
         if packet.get("cmd", "") == "CALLCHANGED":
             call = packet.get("call", "")
             if call:
-                result = self.spots.get_like_calls(call)
+                result = self.parent.database.get_spots_like_calls(call)
                 if result:
                     cmd = {}
                     cmd["cmd"] = "CHECKSPOTS"
@@ -752,7 +456,7 @@ class BandMapWindow(QDockWidget):
         self.spot_aging()
         step, _digits = self.determine_step_digits()
 
-        result = self.spots.getspotsinband(self.currentBand.start, self.currentBand.end)
+        result = self.parent.database.getspotsinband(self.currentBand.start, self.currentBand.end)
         logger.debug(
             f"{len(result)} spots in range {self.currentBand.start} - {self.currentBand.end}"
         )
@@ -848,7 +552,7 @@ class BandMapWindow(QDockWidget):
     def spot_aging(self) -> None:
         """Delete spots older than age time."""
         if self.agetime:
-            self.spots.delete_spots(self.agetime)
+            self.parent.database.delete_spots(self.agetime)
 
     def clear_all_callsign_from_scene(self) -> None:
         """Remove callsigns from the scene."""
@@ -868,11 +572,11 @@ class BandMapWindow(QDockWidget):
 
     def clear_spots(self) -> None:
         """Delete all spots from the database."""
-        self.spots.delete_spots(0)
+        self.parent.database.delete_spots(0)
 
     def clear_marked(self) -> None:
         """Delete all marked spots."""
-        self.spots.delete_marks()
+        self.parent.database.delete_marks()
 
     def spot_aging_changed(self) -> None:
         """Called when spot aging spinbox is changed."""
