@@ -20,10 +20,13 @@ from PyQt6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsScene,
     QMenu,
+    QSizePolicy,
+    QSpacerItem,
 )
 
 from not1mm import fsutils
 from not1mm.lib.i18n import load_ui
+from not1mm.lib.preferences import Preferences
 from not1mm.lib.rot_interface import RotatorInterface
 
 logger = logging.getLogger(__name__)
@@ -73,10 +76,13 @@ class RotatorWindow(QDockWidget):
         self.watch_timer.timeout.connect(self.check_rotator)
         self.watch_timer.start(1000)
 
+        initial = Preferences.data().get("rotator_show_nswe", True)
         self.context_menu = QMenu(self)
         self.show_nswe_buttons_action = self.context_menu.addAction("Show NSWE buttons")
         self.show_nswe_buttons_action.setCheckable(True)
+        self.show_nswe_buttons_action.setChecked(initial)
         self.show_nswe_buttons_action.triggered.connect(self.show_nswe_buttons)
+        self._apply_nswe_visibility(initial)
 
     def set_host_port(self, host: str, port: int) -> None:
         """Sets the networking host and port."""
@@ -408,23 +414,43 @@ class RotatorWindow(QDockWidget):
                 self.rotator.set_position(angle)
 
     def show_contextmenu(self, event) -> None:
-        self.context_menu.exec(event)
+        self.context_menu.exec(self.centralwidget.mapToGlobal(event))
 
     def show_nswe_buttons(self) -> None:
         show = self.show_nswe_buttons_action.isChecked()
-        if show:
-            self.north_button.show()
-            self.south_button.show()
-            self.west_button.show()
-            self.east_button.show()
-        else:
-            self.north_button.hide()
-            self.south_button.hide()
-            self.west_button.hide()
-            self.east_button.hide()
-            self.east_spacer.hide()
-            self.west_spacer.hide()
-            #self.rotatorvlayout.setStretch(2, 0)
+        pref = Preferences.data()
+        pref["rotator_show_nswe"] = show
+        Preferences.save()
+        self._apply_nswe_visibility(show)
+
+    def _apply_nswe_visibility(self, show: bool) -> None:
+        policy_normal = QSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
+        )
+        policy_hidden = QSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        for i in range(self.horizontalLayout_2.count()):
+            item = self.horizontalLayout_2.itemAt(i)
+            if isinstance(item, QSpacerItem):
+                if show:
+                    item.changeSize(
+                        40, 20,
+                        QSizePolicy.Policy.Minimum,
+                        QSizePolicy.Policy.Preferred,
+                    )
+                else:
+                    item.changeSize(
+                        0, 0,
+                        QSizePolicy.Policy.Ignored,
+                        QSizePolicy.Policy.Ignored,
+                    )
+            else:
+                widget = item.widget()
+                if widget is not None:
+                    widget.setVisible(show)
+                    widget.setSizePolicy(policy_normal if show else policy_hidden)
+        self.centralwidget.layout().activate()
 
     def check_rotator(self) -> None:
         """Check the rotator"""
